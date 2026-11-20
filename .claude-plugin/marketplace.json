@@ -1,0 +1,13 @@
+{
+  "name": "dispatch-marketplace",
+  "owner": { "name": "m1014395102" },
+  "description": "Claude 指挥 Gemini / Copilot 协作开发的插件",
+  "plugins": [
+    {
+      "name": "dispatch",
+      "description": "Claude 当指挥，把任务派给 Gemini CLI、Copilot CLI",
+      "version": "1.0.0",
+      "source": "./"
+    }
+  ]
+}
