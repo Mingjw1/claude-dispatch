@@ -6,12 +6,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
 
-from agentdesk import gitops
+from agentdesk import gitops, merger
 from agentdesk.commander import CommanderError, check_acyclic
 from agentdesk.config import AppConfig, ConfigError, build_command, decorate_prompt
 from agentdesk.proc import Proc, RunResult, run_capture
 from agentdesk.store import (CONFIRM_MERGE, CONFIRM_PLAN, DISCARDED, DONE, DRAFT, FAILED, IN_PROGRESS,
-                             INTERRUPTED, MERGED, PASSED, PLANNING, QUEUED, REJECTED, REVIEWING, RUNNING,
+                             INTERRUPTED, MERGED, PASSED, PLANNING, QUEUED, REJECTED, REQ_MERGED, REVIEWING, RUNNING,
                              STOPPED, Requirement, Store, Task)
 
 RETRYABLE = (FAILED, REJECTED, STOPPED, INTERRUPTED, DONE, PASSED)
@@ -399,3 +399,78 @@ class Engine:
         t = self._set(task_id, status=PASSED, error="",
                       review={"verdict": "pass", "reasons": ["用户确认合格"], "retry_prompt": ""})
         self._after_verdict(t)
+
+    # ---------- 合并
+    def merge_task(self, task_id: str) -> None:
+        t = self.store.get_task(task_id)
+        if t.requirement:
+            raise EngineError("需求里的任务要在需求页整体合并")
+        if t.status not in (DONE, PASSED):
+            raise EngineError("只有待审查或合格的任务可以合并")
+        with self._merge_lock:
+            outcome = merger.merge_tasks(self.repo, [t], self.cfg.test_command, self._timeout())
+            self._apply_merge([t], outcome)
+        extra = {"error": outcome["message"]} if outcome["state"] == "refused" else {}
+        self._set(task_id, merge=outcome, **extra)
+
+    def merge_requirement(self, req_id: str) -> None:
+        r = self.store.get_requirement(req_id)
+        if r.status != CONFIRM_MERGE:
+            raise EngineError("这个需求还没到合并这一步")
+        tasks = merger.order([t for t in map(self.store.get_task, r.tasks) if t.status == PASSED])
+        with self._merge_lock:
+            outcome = merger.merge_tasks(self.repo, tasks, self.cfg.test_command, self._timeout())
+            self._apply_merge(tasks, outcome)
+        if outcome["state"] in ("ok", "test_failed"):
+            self._set_req(req_id, status=REQ_MERGED, merge=outcome, error="")
+        elif outcome["state"] == "refused":
+            self._set_req(req_id, merge=outcome, error=outcome["message"])
+        else:
+            self._set_req(req_id, merge=outcome,
+                          error="合并冲突，已恢复原状；冲突的任务可以选“从头重做”在最新代码上重派")
+
+    def _apply_merge(self, tasks: list[Task], outcome: dict) -> None:
+        for t in tasks:
+            if t.id in outcome["merged"]:
+                self._set(t.id, status=MERGED, error="")
+                if outcome["state"] != "test_failed":
+                    self._cleanup(t.id)
+            elif t.id == outcome.get("conflict_task"):
+                self._set(t.id, error=f"合并冲突：{'、'.join(outcome['conflicts'])}。"
+                                      "可以选“从头重做”在最新代码上重派")
+
+    def _undo(self, merge: dict | None, task_ids: list[str], back_to: str) -> None:
+        if not merge or merge.get("state") != "test_failed":
+            raise EngineError("只有全量测试失败的合并可以撤销")
+        try:
+            merger.undo(self.repo, merge)
+        except merger.MergeError as e:
+            raise EngineError(str(e)) from e
+        for task_id in task_ids:
+            self._set(task_id, status=back_to)
+
+    def _keep(self, merge: dict | None, task_ids: list[str]) -> None:
+        if not merge or merge.get("state") != "test_failed":
+            raise EngineError("没有等待处理的合并")
+        for task_id in task_ids:
+            self._cleanup(task_id)
+
+    def undo_task(self, task_id: str) -> None:
+        t = self.store.get_task(task_id)
+        self._undo(t.merge, [task_id], DONE)
+        self._set(task_id, merge={**t.merge, "state": "undone"})
+
+    def keep_task_merge(self, task_id: str) -> None:
+        t = self.store.get_task(task_id)
+        self._keep(t.merge, [task_id])
+        self._set(task_id, merge={**t.merge, "state": "kept"})
+
+    def undo_requirement(self, req_id: str) -> None:
+        r = self.store.get_requirement(req_id)
+        self._undo(r.merge, (r.merge or {}).get("merged", []), PASSED)
+        self._set_req(req_id, status=CONFIRM_MERGE, merge={**r.merge, "state": "undone"})
+
+    def keep_requirement_merge(self, req_id: str) -> None:
+        r = self.store.get_requirement(req_id)
+        self._keep(r.merge, (r.merge or {}).get("merged", []))
+        self._set_req(req_id, merge={**r.merge, "state": "kept"})
