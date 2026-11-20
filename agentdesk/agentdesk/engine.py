@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
@@ -307,7 +308,7 @@ class Engine:
                 deps = [by_id.get(d) for d in t.after]
                 if any(d is None or d.status not in (PASSED, MERGED, DISCARDED) for d in deps):
                     continue
-                self._set(t.id, status=RUNNING, error="", attempts=t.attempts + 1)
+                self._set(t.id, status=RUNNING, error="", attempts=t.attempts + 1, started=time.time())
                 running += 1
                 threading.Thread(target=self._run, args=(t.id,), daemon=True).start()
 

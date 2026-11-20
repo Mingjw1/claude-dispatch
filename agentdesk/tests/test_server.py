@@ -126,3 +126,12 @@ def test_ui_page_and_assets_are_served(server):
     code, js = call(server, "/static/app.js", token=False)
     assert code == 200 and "EventSource" in js
     assert call(server, "/static/style.css", token=False)[0] == 200
+
+
+def test_pick_folder_returns_chosen_path(server, tmp_path):
+    app, _ = server
+    app.pick_folder = lambda: str(tmp_path)
+    code, body = call(server, "/api/pick-folder", {})
+    assert code == 200 and json.loads(body) == {"path": str(tmp_path)}
+    app.pick_folder = lambda: ""
+    assert json.loads(call(server, "/api/pick-folder", {})[1]) == {"path": ""}

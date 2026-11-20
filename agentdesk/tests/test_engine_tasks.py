@@ -134,3 +134,13 @@ def test_manual_review_then_approve(make_engine):
     assert e.commander.review_calls[0][1].count("+x") == 1
     e.approve(t.id)
     assert e.store.get_task(t.id).status == "passed"
+
+
+def test_running_task_records_start_time(make_engine):
+    import time
+    e = make_engine()
+    before = time.time()
+    t = e.create_task("x", "SLEEP 30", "fake", "m1", "edit")
+    t = status(e, t.id, "running")
+    assert t.started is not None and before <= t.started <= time.time()
+    e.stop(t.id)

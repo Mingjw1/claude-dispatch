@@ -41,6 +41,7 @@ class Task:
     pid: int | None = None
     merge: dict | None = None    # 手动任务的合并结果，格式见 merger.merge_tasks
     error: str = ""
+    started: float | None = None  # 最近一次开始运行的时间（time.time()）
 
 
 @dataclass

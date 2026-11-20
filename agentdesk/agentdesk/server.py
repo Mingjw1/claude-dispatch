@@ -6,6 +6,7 @@ import queue
 import re
 import secrets
 import shutil
+import subprocess
 import threading
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,12 +17,27 @@ from agentdesk import gitops, merger
 from agentdesk.commander import Commander, CommanderError, commander_argv
 from agentdesk.config import LEVELS, AppConfig, ConfigError, load_config
 from agentdesk.engine import Engine, EngineError
-from agentdesk.proc import run_io
+from agentdesk.proc import NO_WINDOW, run_io
 from agentdesk.store import Store
 
 WEB = Path(__file__).resolve().parent / "web"
 TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".css": "text/css; charset=utf-8"}
+PICK_FOLDER_PS = (
+    "Add-Type -AssemblyName System.Windows.Forms;"
+    "$owner = New-Object System.Windows.Forms.Form -Property @{TopMost = $true};"
+    "$d = New-Object System.Windows.Forms.FolderBrowserDialog;"
+    "$d.Description = '选择一个 git 仓库目录';"
+    "if ($d.ShowDialog($owner) -eq 'OK') { [Console]::OutputEncoding = [Text.Encoding]::UTF8; $d.SelectedPath }")
+
+
+def pick_folder() -> str:
+    """弹出系统的选择文件夹对话框，返回选中的路径；取消时返回空字符串。"""
+    r = subprocess.run(["powershell", "-STA", "-NoProfile", "-Command", PICK_FOLDER_PS], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
+    return r.stdout.strip()
+
+
 USER_ERRORS = (EngineError, ConfigError, CommanderError, gitops.GitError, merger.MergeError, KeyError, ValueError)
 
 
@@ -61,6 +77,7 @@ class App:
         self.engines: dict[Path, Engine] = {}
         self.current: Engine | None = None
         self.probes: dict[str, dict] = {}
+        self.pick_folder = pick_folder
         self._make_commander = make_commander or (
             lambda repo, cfg: Commander(commander_argv(cfg.commander_model), repo))
         self._lock = threading.Lock()
@@ -193,6 +210,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/open":
             app.open_project(b["path"])
             return None
+        if path == "/api/pick-folder":
+            return {"path": app.pick_folder()}
         e = app.current
         if e is None:
             raise EngineError("请先打开一个项目")

@@ -7,19 +7,18 @@
 </head>
 <body>
 <header>
-  <input id="project" list="recent" placeholder="项目目录，例如 D:\code\my-repo" size="48">
-  <datalist id="recent"></datalist>
-  <button id="open">打开</button>
-  <span id="branch"></span>
+  <div class="brand">Agent 指挥台</div>
+  <button id="project-btn" class="project" title="切换项目"><span id="project-name">选择项目</span><span id="branch" class="muted"></span> ▾</button>
   <span class="grow"></span>
-  <button id="new-req" class="primary">＋ 新需求给 Claude</button>
+  <span id="running" class="pill"></span>
   <button id="new-task">＋ 手动派活</button>
-  <span id="running"></span>
+  <button id="new-req" class="primary">＋ 新需求给 Claude</button>
 </header>
 <main>
   <nav id="list"></nav>
   <section id="detail"></section>
 </main>
+<div id="popover" class="popover" hidden></div>
 <dialog id="dlg"></dialog>
 <script src="/static/app.js"></script>
 </body>
