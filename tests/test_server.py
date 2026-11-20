@@ -117,3 +117,12 @@ def test_events_stream_reports_task_changes(server, repo):
     else:
         pytest.fail("没收到任务事件")
     conn.close()
+
+
+def test_ui_page_and_assets_are_served(server):
+    app, _ = server
+    code, html = call(server, f"/?t={app.token}", token=False)
+    assert code == 200 and "/static/app.js" in html and "新需求给 Claude" in html
+    code, js = call(server, "/static/app.js", token=False)
+    assert code == 200 and "EventSource" in js
+    assert call(server, "/static/style.css", token=False)[0] == 200

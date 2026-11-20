@@ -1,1 +1,26 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Agent 指挥台</title></head><body>Agent 指挥台</body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Agent 指挥台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <input id="project" list="recent" placeholder="项目目录，例如 D:\code\my-repo" size="48">
+  <datalist id="recent"></datalist>
+  <button id="open">打开</button>
+  <span id="branch"></span>
+  <span class="grow"></span>
+  <button id="new-req" class="primary">＋ 新需求给 Claude</button>
+  <button id="new-task">＋ 手动派活</button>
+  <span id="running"></span>
+</header>
+<main>
+  <nav id="list"></nav>
+  <section id="detail"></section>
+</main>
+<dialog id="dlg"></dialog>
+<script src="/static/app.js"></script>
+</body>
+</html>
