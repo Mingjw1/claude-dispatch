@@ -45,7 +45,8 @@ def branch(cwd: Path) -> str:
 
 
 def is_clean(cwd: Path) -> bool:
-    return git(cwd, "status", "--porcelain") == ""
+    """已跟踪的文件没有未提交的改动。未跟踪的新文件不算（合并不会碰它们，除非会被覆盖，那时 git 自己会拒绝）。"""
+    return git(cwd, "status", "--porcelain", "--untracked-files=no") == ""
 
 
 def worktree_dir(repo: Path, task_id: str) -> Path:

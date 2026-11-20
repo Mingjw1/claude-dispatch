@@ -57,7 +57,7 @@ def test_merge_conflict_is_aborted(repo):
 
 def test_is_clean_and_reset_hard(repo):
     base = gitops.head(repo)
-    (repo / "x.txt").write_text("x", encoding="utf-8")
+    (repo / "README.md").write_text("x", encoding="utf-8")
     assert not gitops.is_clean(repo)
     gitops.git(repo, "add", "-A")
     gitops.git(repo, "commit", "-q", "-m", "x")
@@ -68,3 +68,10 @@ def test_is_clean_and_reset_hard(repo):
 def test_repo_root_rejects_non_repo(tmp_path):
     with pytest.raises(gitops.GitError):
         gitops.repo_root(tmp_path / "nope")
+
+
+def test_untracked_files_do_not_count_as_uncommitted_changes(repo):
+    (repo / "new.txt").write_text("x", encoding="utf-8")
+    assert gitops.is_clean(repo)
+    (repo / "README.md").write_text("changed\n", encoding="utf-8")
+    assert not gitops.is_clean(repo)
