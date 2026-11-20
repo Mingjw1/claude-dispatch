@@ -12,7 +12,8 @@ Claude Code 插件，包含：
    gemini        # 首次运行按提示登录
    copilot       # 首次运行按提示登录
    ```
-2. 确认可以不进交互界面直接调用：`gemini -p "回复OK"`、`copilot -p "回复OK" -s`
+2. 在 `~/.claude/settings.json` 里加上 `"worktree": {"baseRef": "head"}`，让 worktree 从当前分支建。
+3. 确认可以不进交互界面直接调用：`gemini -p "回复OK"`、`copilot -p "回复OK" -s`
 
 ## 安装插件
 在 Claude Code 里执行：
