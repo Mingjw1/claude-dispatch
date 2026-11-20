@@ -25,3 +25,37 @@ def wait_for(pred, timeout=30.0):
             return value
         time.sleep(0.05)
     raise AssertionError("等待超时")
+
+
+from agentdesk.commander import validate_plan  # noqa: E402
+
+
+class FakeCommander:
+    """代替 Claude：plans / reviews / summaries 里放预置结果（放异常实例则抛出）。"""
+
+    def __init__(self):
+        self.plans, self.reviews, self.summaries, self.review_calls = [], [], [], []
+
+    @staticmethod
+    def _give(item):
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def plan(self, requirement, cfg):
+        return validate_plan(self._give(self.plans.pop(0)), cfg)
+
+    def review(self, task, diff, outside):
+        self.review_calls.append((task.id, diff, outside))
+        default = {"verdict": "pass", "reasons": ["ok"], "retry_prompt": ""}
+        return self._give(self.reviews.pop(0) if self.reviews else default)
+
+    def summarize(self, items):
+        return self._give(self.summaries.pop(0) if self.summaries else "总结")
+
+
+def status(engine, task_id, *want, timeout=30.0):
+    def check():
+        t = engine.store.get_task(task_id)
+        return t if t.status in want else None
+    return wait_for(check, timeout)

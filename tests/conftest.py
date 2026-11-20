@@ -25,3 +25,24 @@ def repo(tmp_path):
     _git(path, "add", "-A")
     _git(path, "commit", "-q", "-m", "init")
     return path
+
+
+from agentdesk import gitops  # noqa: E402
+from agentdesk.engine import Engine  # noqa: E402
+from agentdesk.store import Store  # noqa: E402
+from helpers import FakeCommander, fake_config  # noqa: E402
+
+
+@pytest.fixture
+def make_engine(repo):
+    engines = []
+
+    def make(**cfg):
+        engine = Engine(repo, fake_config(**cfg), Store(gitops.store_dir(repo)), FakeCommander())
+        engine.start()
+        engines.append(engine)
+        return engine
+
+    yield make
+    for engine in engines:
+        engine.close()
