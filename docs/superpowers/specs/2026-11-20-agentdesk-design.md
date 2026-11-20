@@ -88,15 +88,14 @@ label = "Copilot"
 models = ["auto", "gpt-6-luna", "gpt-6.1-sol"]
 default_model = "auto"
 [agents.copilot.commands]
-read = ["copilot", "-p", "{prompt}", "-s", "--no-ask-user", "--allow-all-tools", "--deny-tool", "write", "--model", "{model}"]
-edit = ["copilot", "-p", "{prompt}", "-s", "--no-ask-user", "--allow-all-tools", "--deny-tool", "shell(git push)", "--deny-tool", "shell(git commit)", "--model", "{model}"]
-full = ["copilot", "-p", "{prompt}", "-s", "--no-ask-user", "--allow-all", "--deny-tool", "shell(git push)", "--deny-tool", "shell(git commit)", "--model", "{model}"]
+read = ["copilot", "-s", "--no-ask-user", "--allow-all-tools", "--deny-tool", "write", "--model", "{model}"]
+edit = ["copilot", "-s", "--no-ask-user", "--allow-all-tools", "--deny-tool", "shell(git push)", "--deny-tool", "shell(git commit)", "--model", "{model}"]
+full = ["copilot", "-s", "--no-ask-user", "--allow-all", "--deny-tool", "shell(git push)", "--deny-tool", "shell(git commit)", "--model", "{model}"]
 
 [agents.gemini]
 label = "Gemini"
 models = ["auto-gemini-3"]
 default_model = "auto-gemini-3"
-prompt_via = "stdin"
 [agents.gemini.commands]
 read = ["gemini", "--approval-mode", "plan", "-m", "{model}"]
 edit = ["gemini", "--approval-mode", "yolo", "-m", "{model}"]
@@ -106,17 +105,16 @@ label = "Claude"
 models = ["haiku", "sonnet", "opus"]
 default_model = "sonnet"
 [agents.claude.commands]
-read = ["claude", "-p", "{prompt}", "--model", "{model}", "--permission-mode", "plan"]
-edit = ["claude", "-p", "{prompt}", "--model", "{model}", "--permission-mode", "acceptEdits"]
-full = ["claude", "-p", "{prompt}", "--model", "{model}", "--permission-mode", "bypassPermissions"]
+read = ["claude", "-p", "--model", "{model}", "--permission-mode", "plan"]
+edit = ["claude", "-p", "--model", "{model}", "--permission-mode", "acceptEdits"]
+full = ["claude", "-p", "--model", "{model}", "--permission-mode", "bypassPermissions"]
 ```
 ```toml
 # <项目>/.agentdesk.toml（可选）
 worktree_setup = ["mkdir runs"]
 test_command = "python -m pytest -q"
 ```
-- 命令写成参数数组，不经过 shell，`{prompt}`、`{model}` 是占位符。
-- `prompt_via = "stdin"` 时任务说明从标准输入传入（避开 Windows 32K 命令行长度上限）；默认 `arg`。任务说明超过 24K 字符而执行者只支持 `arg` 时，拒绝派出并提示。
+- 命令写成参数数组，不经过 shell，`{model}` 是占位符。任务说明一律从标准输入传入，不放进命令行：npm 装的命令行在 Windows 上是 `.cmd` 脚本，放进参数会被 cmd 解释 `&|%` 等字符，也受 32K 长度限制。已实测 claude、gemini、copilot 都支持从标准输入读任务说明。
 - `edit` 和 `full` 档位的说明末尾，应用自动追加"完成后不要 git commit、push 或 reset，只改工作区文件"；`edit` 再加"只读写当前目录之内的文件"。`read` 档位前面加"只读任务：不要修改、新建或删除任何文件"。
 - 执行者在 `-p` 模式下不会弹窗申请权限，权限不够时只会失败或在输出里说明；此时任务按失败处理，用户在重派时提高档位。
 - Copilot 的实际可用模型由用户在 Copilot 里用 `/model` 查看后填写。
@@ -132,7 +130,7 @@ test_command = "python -m pytest -q"
 
 ## 4. Claude 指挥协议
 
-三次调用都在项目主目录下执行 `claude -p <提示> --output-format json --permission-mode plan --model <commander_model>`，Claude 只读。
+三次调用都在项目主目录下执行 `claude -p --output-format json --permission-mode plan --model <commander_model>`（提示从标准输入传入），Claude 只读。
 
 ### 拆任务
 输入：用户需求、可用执行者和模型列表、规则（每个任务只改一组文件；会改同一文件的任务用 `after` 排序；说明要能独立看懂；写明验收命令）。
@@ -173,7 +171,7 @@ JSON 解析失败或缺字段：带着错误信息再要一次；仍失败则显
 
 - pytest 单元测试，临时 git 仓库放在项目内 `runs/`（不写 C 盘临时目录）。
 - 执行者和 Claude 用假脚本代替：假执行者是写文件、按参数输出、可模拟失败和超时的小 Python 脚本；假 `claude` 返回预置 JSON。
-- 覆盖：配置解析和覆盖、命令拼装（arg/stdin、各档位）、重派的两种方式、worktree 建立与清理、任务状态流转、依赖调度和并行上限、审查结果解析、合并、冲突回退、撤销合并、重启后的中断恢复、口令校验。
+- 覆盖：配置解析和覆盖、命令拼装（各档位、{model} 替换、.cmd 解析）、重派的两种方式、worktree 建立与清理、任务状态流转、依赖调度和并行上限、审查结果解析、合并、冲突回退、撤销合并、重启后的中断恢复、口令校验。
 - 最后用真实的 claude、gemini、copilot 在一个小仓库上手动跑通一遍完整流程。
 
 ## 7. 目录结构
