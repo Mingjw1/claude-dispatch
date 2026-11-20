@@ -28,7 +28,7 @@
 │ [＋ 新需求给 Claude]  [＋ 手动派活]                  正在跑 2 / 最多同时 3   │
 ├──────────────────────────┬───────────────────────────────────────────────┤
 │ 需求：补测试架构          │ 任务 2：给 photo_checks 补流程测试            │
-│  ⏸ 等你确认：任务拆分      │ 执行者 [Copilot ▾]  模型 [auto ▾]  改代码     │
+│  ⏸ 等你确认：任务拆分      │ 执行者 [Copilot ▾] 模型 [auto ▾] 权限 [改代码 ▾]│
 │  1 修复 runs 目录 Gemini ✅│ ┌ 说明 ┬ 实时输出 ┬ 改动 ┬ Claude 审查 ┐       │
 │  2 photo_checks  Copilot ⏳│ │ ...执行者输出逐行滚动...                │       │
 │  3 统一 Fake     Claude  ⏳│ └────────────────────────────────────────┘       │
@@ -39,19 +39,21 @@
 启动时选择项目目录（任意本地 git 仓库），记住最近用过的项目。
 
 ### Claude 指挥模式
-1. 用户输入需求；Claude 读代码后拆成任务列表（说明、执行者、模型、只读/改代码、涉及文件、验收命令、先后依赖）。
-2. **⏸ 确认拆分**：任务以可编辑表格显示，可改执行者、模型、说明，可删可加，点"开始"。
+1. 用户输入需求；Claude 读代码后拆成任务列表（说明、执行者、模型、权限档位、涉及文件、验收命令、先后依赖）。
+2. **⏸ 确认拆分**：任务以可编辑表格显示，可改执行者、模型、权限档位、说明，可删可加，点"开始"。
 3. 任务各在自己的 worktree 里执行，并行数受 `max_parallel` 限制，有 `after` 依赖的等前置任务完成。
 4. 每个任务跑完：应用执行验收命令，再交给 Claude 审查，得到合格或不合格加理由。
-5. **⏸ 确认重派**：不合格时显示理由和 Claude 建议的新说明，用户可改执行者、模型、说明后点"重派"，或点"我自己处理"。同一任务重派 2 次后，界面建议用户自己处理。
+5. **⏸ 确认重派**：不合格时显示理由和 Claude 建议的新说明，用户可改执行者、模型、权限档位、说明，并选择"在已有改动上继续"或"从头重做"（见第 3 节"重派"），然后点"重派"，或点"我自己处理"。同一任务重派 2 次后，界面建议用户自己处理。
 6. **⏸ 确认合并**：全部合格后显示每个任务的改动、Claude 的总结，用户点"合并"才合并进当前分支。不自动 push。
 
 ### 手动模式
-填写说明，选执行者、模型、只读/改代码、验收命令（可空），点"派出"。完成后用户看改动，选"合并"、"丢弃"或"交给 Claude 审查"。
+填写说明，选执行者、模型、权限档位、验收命令（可空），点"派出"。完成后用户看改动，选"合并"、"丢弃"或"交给 Claude 审查"。
 
 ### 通用规则
 - 同一个任务不会同时派给两个执行者（worktree 之间不隔离，执行者能读到彼此的成果）。
 - 任何任务都可以随时停止。
+- 权限按任务设定：每个任务启动一个新的执行者进程，权限参数在启动时给定，所以下一个任务或重派时可以随时换档位，不需要重启应用或会话。正在运行的任务不能中途改权限，要改就停止后重派（可保留已有改动）。
+  对比：AionUi 让每个 agent 保持一个长期运行的会话进程，运行中改权限依赖 agent 支持 ACP `session/set_mode`；Gemini、Copilot 不支持时只能重启会话。
 - 关掉窗口再打开，需求和任务记录都在。
 
 ## 3. 架构
@@ -75,18 +77,27 @@ max_parallel = 3
 task_timeout_minutes = 30
 commander_model = "opus"
 
+# 权限档位：名字和显示文字全局固定，每个执行者为自己支持的档位给出启动命令；没给的档位在下拉框里不可选
+[levels]
+read = "只读"          # 不改文件
+edit = "改代码"        # 只改当前 worktree，不能提交、推送
+full = "改代码+联网"    # 在 edit 基础上允许访问网络和工作区外的路径
+
 [agents.copilot]
 label = "Copilot"
 models = ["auto", "gpt-6-luna", "gpt-6.1-sol"]
 default_model = "auto"
+[agents.copilot.commands]
 read = ["copilot", "-p", "{prompt}", "-s", "--no-ask-user", "--allow-all-tools", "--deny-tool", "write", "--model", "{model}"]
-edit = ["copilot", "-p", "{prompt}", "-s", "--no-ask-user", "--allow-all-tools", "--deny-tool", "shell(git push)", "--model", "{model}"]
+edit = ["copilot", "-p", "{prompt}", "-s", "--no-ask-user", "--allow-all-tools", "--deny-tool", "shell(git push)", "--deny-tool", "shell(git commit)", "--model", "{model}"]
+full = ["copilot", "-p", "{prompt}", "-s", "--no-ask-user", "--allow-all", "--deny-tool", "shell(git push)", "--deny-tool", "shell(git commit)", "--model", "{model}"]
 
 [agents.gemini]
 label = "Gemini"
 models = ["auto-gemini-3"]
 default_model = "auto-gemini-3"
 prompt_via = "stdin"
+[agents.gemini.commands]
 read = ["gemini", "--approval-mode", "plan", "-m", "{model}"]
 edit = ["gemini", "--approval-mode", "yolo", "-m", "{model}"]
 
@@ -94,8 +105,10 @@ edit = ["gemini", "--approval-mode", "yolo", "-m", "{model}"]
 label = "Claude"
 models = ["haiku", "sonnet", "opus"]
 default_model = "sonnet"
+[agents.claude.commands]
 read = ["claude", "-p", "{prompt}", "--model", "{model}", "--permission-mode", "plan"]
 edit = ["claude", "-p", "{prompt}", "--model", "{model}", "--permission-mode", "acceptEdits"]
+full = ["claude", "-p", "{prompt}", "--model", "{model}", "--permission-mode", "bypassPermissions"]
 ```
 ```toml
 # <项目>/.agentdesk.toml（可选）
@@ -104,8 +117,14 @@ test_command = "python -m pytest -q"
 ```
 - 命令写成参数数组，不经过 shell，`{prompt}`、`{model}` 是占位符。
 - `prompt_via = "stdin"` 时任务说明从标准输入传入（避开 Windows 32K 命令行长度上限）；默认 `arg`。任务说明超过 24K 字符而执行者只支持 `arg` 时，拒绝派出并提示。
-- 改代码任务的说明末尾，应用自动追加"完成后不要 git commit、push 或 reset，只改工作区文件；只读写当前目录之内的文件"。只读任务前面加"只读任务：不要修改、新建或删除任何文件"。
+- `edit` 和 `full` 档位的说明末尾，应用自动追加"完成后不要 git commit、push 或 reset，只改工作区文件"；`edit` 再加"只读写当前目录之内的文件"。`read` 档位前面加"只读任务：不要修改、新建或删除任何文件"。
+- 执行者在 `-p` 模式下不会弹窗申请权限，权限不够时只会失败或在输出里说明；此时任务按失败处理，用户在重派时提高档位。
 - Copilot 的实际可用模型由用户在 Copilot 里用 `/model` 查看后填写。
+
+### 重派
+- **在已有改动上继续**：沿用原来的 worktree 和任务分支，新说明前面自动加上"上一轮的改动已经在工作区里（附改动统计），在此基础上继续"，这一轮的改动作为新提交叠在任务分支上。
+- **从头重做**：丢弃原 worktree 和分支，从当前分支 HEAD 重新建。
+- 两种方式都可以换执行者、模型、权限档位。
 
 ### 任务状态
 `草稿 → 排队 → 运行中 → 待审查 → 审查中 → 合格 / 不合格 → 待合并 → 已合并`
@@ -119,10 +138,10 @@ test_command = "python -m pytest -q"
 输入：用户需求、可用执行者和模型列表、规则（每个任务只改一组文件；会改同一文件的任务用 `after` 排序；说明要能独立看懂；写明验收命令）。
 输出：
 ```json
-{"tasks": [{"id": 1, "title": "...", "mode": "edit", "agent": "copilot", "model": "auto",
+{"tasks": [{"id": 1, "title": "...", "level": "edit", "agent": "copilot", "model": "auto",
             "files": ["tests/test_x.py"], "after": [], "prompt": "...", "accept": "python -m pytest tests/test_x.py -q"}]}
 ```
-校验：执行者和模型必须在配置里，否则在确认表格里标红；`after` 引用必须存在且无环。
+校验：执行者、模型、档位必须在配置里且该执行者支持该档位，否则在确认表格里标红；`after` 引用必须存在且无环。
 
 ### 审查
 应用先在 worktree 里执行验收命令，然后把以下内容交给 Claude：任务说明、相对起点的改动（含新文件；超过 200KB 时只给 `--stat` 并注明）、验收命令的退出码和输出末尾、改到 `files` 以外文件的清单。
@@ -143,7 +162,7 @@ JSON 解析失败或缺字段：带着错误信息再要一次；仍失败则显
 | 情况 | 处理 |
 |---|---|
 | 命令行工具没装或没登录 | 启动时对每个执行者执行一次版本检测，失败的在下拉框里变灰并显示原因 |
-| 执行者非 0 退出或超时 | 任务标为失败，显示错误输出末尾，可重派 |
+| 执行者非 0 退出或超时（包括权限不够做不下去） | 任务标为失败，显示错误输出末尾，可重派并换档位 |
 | Claude 返回格式错误 | 见第 4 节 |
 | 应用中途关闭 | 重开时把"运行中"的任务标为"中断"，按记录的 pid 尽量结束残留进程；worktree 保留，可重跑或直接审查 |
 | 合并时主工作区有未提交改动 | 拒绝合并，提示先提交 |
@@ -154,7 +173,7 @@ JSON 解析失败或缺字段：带着错误信息再要一次；仍失败则显
 
 - pytest 单元测试，临时 git 仓库放在项目内 `runs/`（不写 C 盘临时目录）。
 - 执行者和 Claude 用假脚本代替：假执行者是写文件、按参数输出、可模拟失败和超时的小 Python 脚本；假 `claude` 返回预置 JSON。
-- 覆盖：配置解析和覆盖、命令拼装（arg/stdin）、worktree 建立与清理、任务状态流转、依赖调度和并行上限、审查结果解析、合并、冲突回退、撤销合并、重启后的中断恢复、口令校验。
+- 覆盖：配置解析和覆盖、命令拼装（arg/stdin、各档位）、重派的两种方式、worktree 建立与清理、任务状态流转、依赖调度和并行上限、审查结果解析、合并、冲突回退、撤销合并、重启后的中断恢复、口令校验。
 - 最后用真实的 claude、gemini、copilot 在一个小仓库上手动跑通一遍完整流程。
 
 ## 7. 目录结构
