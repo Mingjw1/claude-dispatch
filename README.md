@@ -15,9 +15,9 @@ Claude Code 插件，包含：
 2. 确认可以不进交互界面直接调用：`gemini -p "回复OK"`、`copilot -p "回复OK" -s`
 
 ## 安装插件
-在 Claude Code 里执行（路径换成本目录的位置或 git 仓库地址）：
+在 Claude Code 里执行：
 ```
-/plugin marketplace add D:/mingjw/claude-dispatch
+/plugin marketplace add Mingjw1/claude-dispatch
 /plugin install dispatch@dispatch-marketplace
 ```
 装好后重启 Claude Code。
