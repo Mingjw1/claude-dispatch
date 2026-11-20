@@ -7,13 +7,15 @@ from pathlib import Path
 from typing import Callable
 
 from agentdesk import gitops
-from agentdesk.commander import CommanderError
+from agentdesk.commander import CommanderError, check_acyclic
 from agentdesk.config import AppConfig, ConfigError, build_command, decorate_prompt
 from agentdesk.proc import Proc, RunResult, run_capture
-from agentdesk.store import (DISCARDED, DONE, FAILED, INTERRUPTED, MERGED, PASSED, QUEUED, REJECTED,
-                             REVIEWING, RUNNING, STOPPED, Requirement, Store, Task)
+from agentdesk.store import (CONFIRM_MERGE, CONFIRM_PLAN, DISCARDED, DONE, DRAFT, FAILED, IN_PROGRESS,
+                             INTERRUPTED, MERGED, PASSED, PLANNING, QUEUED, REJECTED, REVIEWING, RUNNING,
+                             STOPPED, Requirement, Store, Task)
 
 RETRYABLE = (FAILED, REJECTED, STOPPED, INTERRUPTED, DONE, PASSED)
+DRAFT_FIELDS = {"title", "prompt", "agent", "model", "level", "accept", "files", "after"}
 OUTPUT_TAIL = 4000
 INTERRUPTED_NOTE = "应用重启时这个任务还在运行；执行者进程可能还在后台，请在任务管理器里确认后再重派"
 
@@ -51,6 +53,10 @@ class Engine:
         for t in self.store.tasks():
             if t.status in (RUNNING, REVIEWING):
                 self._set(t.id, status=INTERRUPTED, error=INTERRUPTED_NOTE, pid=None)
+        for r in self.store.requirements():
+            if r.status == PLANNING:
+                self._set_req(r.id, status=CONFIRM_PLAN,
+                              error="应用重启时 Claude 还在拆任务，请重新提交需求或手动添加任务")
 
     # ---------- 小工具
     def _set(self, task_id: str, **changes) -> Task:
@@ -97,7 +103,33 @@ class Engine:
         self._set(task_id, worktree="", branch="")
 
     def _after_verdict(self, task: Task) -> None:
+        if task.requirement:
+            self._check_requirement(task.requirement)
         self._wake.set()
+
+    def _check_requirement(self, req_id: str) -> None:
+        """需求里的任务都合格（或丢弃、已合并）且至少一个合格时，写总结并进入合并确认。"""
+        with self._lock:
+            r = self.store.get_requirement(req_id)
+            tasks = [self.store.get_task(i) for i in r.tasks]
+            if r.status != IN_PROGRESS:
+                return
+            if not all(t.status in (PASSED, DISCARDED, MERGED) for t in tasks):
+                return
+            passed = [t for t in tasks if t.status == PASSED]
+            if not passed:
+                return
+            self._set_req(req_id, status=CONFIRM_MERGE, summary="Claude 正在写总结…")
+        items = []
+        for t in passed:
+            label = self.cfg.agents[t.agent].label if t.agent in self.cfg.agents else t.agent
+            reasons = "；".join((t.review or {}).get("reasons", []))
+            items.append(f"- {t.title}（{label} / {t.model}）：{reasons}\n{gitops.diff_stat(self.repo, t.base, t.commit)}")
+        try:
+            summary = self.commander.summarize(items)
+        except CommanderError as e:
+            summary = f"Claude 写总结失败：{e}"
+        self._set_req(req_id, summary=summary)
 
     # ---------- 手动任务
     def create_task(self, title: str, prompt: str, agent: str, model: str, level: str, accept: str = "") -> Task:
@@ -150,6 +182,100 @@ class Engine:
             self._set(task_id, base="", commit="")
         self._set(task_id, prompt=prompt, agent=agent, model=model, level=level, status=QUEUED, review=None,
                   error="", exit_code=None, accept_code=None, accept_output="")
+        if t.requirement and self.store.get_requirement(t.requirement).status == CONFIRM_MERGE:
+            self._set_req(t.requirement, status=IN_PROGRESS)
+        self._wake.set()
+
+    # ---------- 需求（Claude 指挥）
+    def submit_requirement(self, text: str) -> Requirement:
+        if not text.strip():
+            raise EngineError("需求不能为空")
+        r = self.store.new_requirement(text.strip())
+        self.emit({"type": "requirement", "requirement": asdict(r)})
+        threading.Thread(target=self._plan, args=(r.id,), daemon=True).start()
+        return r
+
+    def _plan(self, req_id: str) -> None:
+        r = self.store.get_requirement(req_id)
+        try:
+            planned = self.commander.plan(r.text, self.cfg)
+        except CommanderError as e:
+            self._set_req(req_id, status=CONFIRM_PLAN, plan_raw=e.raw,
+                          error=f"Claude 拆任务失败：{e}。可以手动添加任务。")
+            return
+        id_map = {}
+        for p in planned:
+            t = self.store.new_task(title=p["title"], prompt=p["prompt"], agent=p["agent"], model=p["model"],
+                                    level=p["level"], accept=p["accept"], files=p["files"],
+                                    requirement=req_id, problems=p["problems"])
+            id_map[p["id"]] = t.id
+        for p in planned:
+            self._set(id_map[p["id"]], after=[id_map[a] for a in p["after"]])
+        self._set_req(req_id, status=CONFIRM_PLAN, tasks=list(id_map.values()), error="")
+
+    def _draft(self, task_id: str) -> Task:
+        t = self.store.get_task(task_id)
+        if t.status != DRAFT:
+            raise EngineError("只能修改还没开始的任务")
+        return t
+
+    def add_draft(self, req_id: str, title: str, prompt: str, agent: str, model: str, level: str,
+                  accept: str = "", files=(), after=()) -> Task:
+        r = self.store.get_requirement(req_id)
+        if r.status != CONFIRM_PLAN:
+            raise EngineError("只能在确认拆分时添加任务")
+        title = title.strip() or (prompt.strip().splitlines() or ["新任务"])[0][:40]
+        t = self.store.new_task(title=title, prompt=prompt, agent=agent, model=model, level=level,
+                                accept=accept.strip(), files=list(files), after=list(after), requirement=req_id)
+        self.emit({"type": "task", "task": asdict(t)})
+        self._set_req(req_id, tasks=[*r.tasks, t.id])
+        return t
+
+    def update_draft(self, task_id: str, **fields) -> Task:
+        bad = set(fields) - DRAFT_FIELDS
+        if bad:
+            raise EngineError(f"不能修改 {'、'.join(sorted(bad))}")
+        self._draft(task_id)
+        return self._set(task_id, problems=[], **fields)
+
+    def delete_draft(self, task_id: str) -> None:
+        t = self._draft(task_id)
+        if t.requirement:
+            r = self.store.get_requirement(t.requirement)
+            for other in r.tasks:
+                if other != task_id and task_id in self.store.get_task(other).after:
+                    self._set(other, after=[a for a in self.store.get_task(other).after if a != task_id])
+            self._set_req(r.id, tasks=[i for i in r.tasks if i != task_id])
+        self.store.delete_task(task_id)
+        self.emit({"type": "deleted", "task": task_id})
+
+    def start_requirement(self, req_id: str) -> None:
+        r = self.store.get_requirement(req_id)
+        if r.status != CONFIRM_PLAN:
+            raise EngineError("这个需求不在等待确认拆分")
+        tasks = [self.store.get_task(i) for i in r.tasks]
+        if not tasks:
+            raise EngineError("还没有任务")
+        errors = []
+        for t in tasks:
+            if not t.prompt.strip():
+                errors.append(f"{t.title}：任务说明为空")
+            try:
+                self._check(t.agent, t.level, t.model)
+            except EngineError as e:
+                errors.append(f"{t.title}：{e}")
+            unknown = [a for a in t.after if a not in r.tasks]
+            if unknown:
+                errors.append(f"{t.title}：依赖的任务不存在 {'、'.join(unknown)}")
+        try:
+            check_acyclic({t.id: t.after for t in tasks})
+        except ValueError as e:
+            errors.append(str(e))
+        if errors:
+            raise EngineError("；".join(errors))
+        for t in tasks:
+            self._set(t.id, status=QUEUED, problems=[])
+        self._set_req(req_id, status=IN_PROGRESS, error="")
         self._wake.set()
 
     # ---------- 调度
