@@ -1,0 +1,10 @@
+[project]
+name = "agentdesk"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--basetemp=runs/.pytest_tmp"  # 测试临时文件放项目里，不写 C 盘

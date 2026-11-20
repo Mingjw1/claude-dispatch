@@ -1,0 +1,33 @@
+# agentdesk 全局配置。项目根目录可放 .agentdesk.toml 覆盖其中任意项，
+# 例如 worktree_setup = ["mkdir runs"]、test_command = "python -m pytest -q"、某个执行者的 models。
+# 档位固定为 read（只读）、edit（改代码）、full（改代码+联网）；每个执行者只为自己支持的档位写命令。
+# 任务说明一律从标准输入传入，命令里不要写任务说明；{model} 会被替换成所选模型。
+max_parallel = 3
+task_timeout_minutes = 30
+commander_model = "opus"
+
+[agents.copilot]
+label = "Copilot"
+models = ["auto", "gpt-6-luna", "gpt-6.1-sol"]   # 以 Copilot 里 /model 列出的为准
+default_model = "auto"
+[agents.copilot.commands]
+read = ["copilot", "-s", "--no-ask-user", "--allow-all-tools", "--deny-tool", "write", "--model", "{model}"]
+edit = ["copilot", "-s", "--no-ask-user", "--allow-all-tools", "--deny-tool", "shell(git push)", "--deny-tool", "shell(git commit)", "--model", "{model}"]
+full = ["copilot", "-s", "--no-ask-user", "--allow-all", "--deny-tool", "shell(git push)", "--deny-tool", "shell(git commit)", "--model", "{model}"]
+
+[agents.gemini]
+label = "Gemini"
+models = ["auto-gemini-3"]
+default_model = "auto-gemini-3"
+[agents.gemini.commands]
+read = ["gemini", "--approval-mode", "plan", "-m", "{model}"]
+edit = ["gemini", "--approval-mode", "yolo", "-m", "{model}"]
+
+[agents.claude]
+label = "Claude"
+models = ["haiku", "sonnet", "opus"]
+default_model = "sonnet"
+[agents.claude.commands]
+read = ["claude", "-p", "--model", "{model}", "--permission-mode", "plan"]
+edit = ["claude", "-p", "--model", "{model}", "--permission-mode", "acceptEdits"]
+full = ["claude", "-p", "--model", "{model}", "--permission-mode", "bypassPermissions"]
