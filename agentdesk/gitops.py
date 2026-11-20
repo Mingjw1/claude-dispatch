@@ -71,9 +71,13 @@ def create_worktree(repo: Path, task_id: str, start: str) -> tuple[Path, str]:
     return path, name
 
 
+# 执行者或验收命令运行时产生的缓存，项目没写 .gitignore 时也不提交（否则合并后会污染主仓库）
+NEVER_COMMIT = ("**/__pycache__/**", "**/*.pyc", "**/.pytest_cache/**", "**/node_modules/**")
+
+
 def commit_all(wt: Path, message: str) -> str | None:
-    git(wt, "add", "-A")
-    if git(wt, "status", "--porcelain") == "":
+    git(wt, "add", "-A", "--", ".", *(f":(exclude,glob){p}" for p in NEVER_COMMIT))
+    if _run(wt, ["diff", "--cached", "--quiet"]).returncode == 0:
         return None
     git(wt, "commit", "-q", "--no-verify", "-m", message)
     return head(wt)

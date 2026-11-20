@@ -75,3 +75,17 @@ def test_untracked_files_do_not_count_as_uncommitted_changes(repo):
     assert gitops.is_clean(repo)
     (repo / "README.md").write_text("changed\n", encoding="utf-8")
     assert not gitops.is_clean(repo)
+
+
+def test_commit_all_skips_build_caches_even_without_gitignore(repo):
+    base = gitops.head(repo)
+    wt, _ = gitops.create_worktree(repo, "t0001", base)
+    (wt / "__pycache__").mkdir()
+    (wt / "__pycache__" / "calc.cpython-313.pyc").write_bytes(b"\x00\x01")
+    (wt / "pkg" / ".pytest_cache").mkdir(parents=True)
+    (wt / "pkg" / ".pytest_cache" / "v").write_text("x", encoding="utf-8")
+    (wt / "stray.pyc").write_bytes(b"\x00")
+    assert gitops.commit_all(wt, "only caches") is None
+    (wt / "calc.py").write_text("x = 1\n", encoding="utf-8")
+    sha = gitops.commit_all(wt, "real change")
+    assert gitops.changed_files(repo, base, sha) == ["calc.py"]
