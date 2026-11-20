@@ -12,7 +12,7 @@ const split = (s) => (s || "").split(/[,，\s]+/).filter(Boolean);
 const STATUS = { draft: "草稿", queued: "排队", running: "运行中", done: "待审查", reviewing: "审查中", passed: "合格", rejected: "不合格", failed: "失败", stopped: "已停止", interrupted: "中断", discarded: "已丢弃", merged: "已合并" };
 const ICON = { draft: "✎", queued: "⏳", running: "▶", done: "👀", reviewing: "🔍", passed: "✅", rejected: "❌", failed: "⚠", stopped: "■", interrupted: "⚡", discarded: "🗑", merged: "🔀" };
 const REQ = { planning: "Claude 正在拆任务…", confirm_plan: "⏸ 等你确认：任务拆分", running: "执行中", confirm_merge: "⏸ 等你确认：合并", merged: "已合并" };
-const MERGE = { ok: "合并完成", test_failed: "已合并，但全量测试没通过", conflict: "合并冲突，已恢复原状", refused: "没有合并", undone: "已撤销合并", kept: "已保留合并" };
+const MERGE = { ok: "合并完成", test_failed: "已合并，但全量测试没通过", conflict: "合并冲突，已恢复原状", refused: "没有合并", failed: "合并没有完成", undone: "已撤销合并", kept: "已保留合并" };
 
 async function api(path, body) {
   const opt = body === undefined
@@ -24,7 +24,12 @@ async function api(path, body) {
   return data;
 }
 async function act(path, body) {
-  try { await api(path, body ?? {}); await refresh(); } catch (e) { alert(e.message); }
+  // 合并、跑测试可能要几分钟：请求期间禁用所有按钮，防止连点
+  document.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+  document.body.style.cursor = "progress";
+  try { await api(path, body ?? {}); } catch (e) { alert(e.message); }
+  document.body.style.cursor = "";
+  await refresh().catch((e) => alert(e.message));
 }
 async function refresh() { S = await api("/api/state"); render(); }
 
@@ -122,7 +127,7 @@ function taskView(t) {
   h += `<div class="actions">
     ${btn("stop", "停止", ["running", "queued"].includes(st))}
     ${btn("retry", "重派…", ["failed", "rejected", "stopped", "interrupted", "done", "passed"].includes(st))}
-    ${btn("review", "交给 Claude 审查", !t.requirement && st === "done")}
+    ${btn("review", "交给 Claude 审查", st === "done")}
     ${btn("approve", "我确认合格", ["done", "rejected"].includes(st))}
     ${btn("merge-task", "合并", !t.requirement && ["done", "passed"].includes(st))}
     ${btn("discard", "丢弃", !["running", "reviewing", "merged", "discarded", "draft"].includes(st))}</div>`;

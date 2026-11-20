@@ -101,6 +101,8 @@ def validate_plan(obj: dict, cfg: AppConfig) -> list[dict]:
     if len(set(ids)) != len(ids):
         raise ValueError("任务 id 重复")
     for t in tasks:
+        if not isinstance(t.get("after") or [], list) or not isinstance(t.get("files") or [], list):
+            raise ValueError(f"任务 {t['id']} 的 after 和 files 必须是数组")
         t["after"] = [str(a) for a in t.get("after") or []]
         missing = [a for a in t["after"] if a not in ids]
         if missing:

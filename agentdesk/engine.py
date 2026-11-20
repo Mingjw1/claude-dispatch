@@ -51,8 +51,10 @@ class Engine:
     def recover(self) -> None:
         """应用重启后：仍标着运行中的任务改为中断。不按记录的 pid 结束进程，pid 可能已被别的程序复用。"""
         for t in self.store.tasks():
-            if t.status in (RUNNING, REVIEWING):
+            if t.status == RUNNING:
                 self._set(t.id, status=INTERRUPTED, error=INTERRUPTED_NOTE, pid=None)
+            elif t.status == REVIEWING:  # 执行者早已跑完、改动已提交，只差审查
+                self._set(t.id, status=DONE, error="应用重启时正在审查，请重新交给 Claude 审查或自己确认合格")
         for r in self.store.requirements():
             if r.status == PLANNING:
                 self._set_req(r.id, status=CONFIRM_PLAN,
@@ -94,6 +96,8 @@ class Engine:
         self.emit({"type": "log", "task": task_id, "line": line})
 
     def _fail(self, task_id: str, message: str) -> None:
+        with self._lock:
+            self._stop_requested.discard(task_id)
         self._set(task_id, status=FAILED, error=message, pid=None)
         self._wake.set()
 
@@ -173,6 +177,8 @@ class Engine:
         if not prompt.strip():
             raise EngineError("任务说明不能为空")
         self._check(agent, level, model)
+        with self._lock:
+            self._stop_requested.discard(task_id)
         wt = Path(t.worktree) if t.worktree else None
         if keep_changes and wt is not None and wt.is_dir():
             stat = gitops.diff_stat(self.repo, t.base, t.commit) if t.commit else ""
@@ -199,8 +205,8 @@ class Engine:
         r = self.store.get_requirement(req_id)
         try:
             planned = self.commander.plan(r.text, self.cfg)
-        except CommanderError as e:
-            self._set_req(req_id, status=CONFIRM_PLAN, plan_raw=e.raw,
+        except Exception as e:  # 线程顶层：不能停在“拆任务中”
+            self._set_req(req_id, status=CONFIRM_PLAN, plan_raw=getattr(e, "raw", ""),
                           error=f"Claude 拆任务失败：{e}。可以手动添加任务。")
             return
         id_map = {}
@@ -299,7 +305,7 @@ class Engine:
                 if t.status != QUEUED:
                     continue
                 deps = [by_id.get(d) for d in t.after]
-                if any(d is None or d.status not in (PASSED, MERGED) for d in deps):
+                if any(d is None or d.status not in (PASSED, MERGED, DISCARDED) for d in deps):
                     continue
                 self._set(t.id, status=RUNNING, error="", attempts=t.attempts + 1)
                 running += 1
@@ -330,8 +336,8 @@ class Engine:
             self.store.append_log(task_id, f"===== 第 {t.attempts} 次：{agent.label} / {t.model} / {t.level} =====\n")
             proc = Proc(argv, Path(t.worktree), decorate_prompt(t.level, t.prompt),
                         lambda line: self._line(task_id, line))
-        except (ConfigError, EngineError, gitops.GitError, OSError, KeyError) as e:
-            self._fail(task_id, str(e.args[0]) if isinstance(e, KeyError) else str(e))
+        except Exception as e:  # 线程顶层：任何错误都要让任务离开“运行中”
+            self._fail(task_id, str(e.args[0]) if isinstance(e, KeyError) and e.args else str(e))
             return
         with self._lock:
             self._procs[task_id] = proc
@@ -345,7 +351,7 @@ class Engine:
             self._procs.pop(task_id, None)
         try:
             self._after_run(task_id, result)
-        except (gitops.GitError, OSError) as e:
+        except Exception as e:  # 线程顶层
             self._fail(task_id, f"收尾出错：{e}")
 
     def _after_run(self, task_id: str, result: RunResult) -> None:
@@ -363,14 +369,32 @@ class Engine:
         if result.code != 0:
             self._fail(task_id, f"执行者退出码 {result.code}，详见实时输出")
             return
-        if t.accept:
-            code, out = run_capture(t.accept, wt, self._timeout())
-            self._set(task_id, accept_code=code, accept_output=out[-OUTPUT_TAIL:])
+        if t.accept and self._accept(task_id, t.accept, wt).stopped:
+            self._set(task_id, status=STOPPED)
+            self._wake.set()
+            return
         self._set(task_id, status=DONE)
         if t.requirement:
             self._review(task_id)
         else:
             self._wake.set()
+
+    def _accept(self, task_id: str, command: str, wt: Path) -> RunResult:
+        """执行验收命令；登记进程，让“停止”在验收阶段也有效。"""
+        lines: list[str] = []
+        with self._lock:
+            proc = Proc(command, wt, None, lines.append, shell=True)
+            self._procs[task_id] = proc
+            stop_now = task_id in self._stop_requested
+            self._stop_requested.discard(task_id)
+        if stop_now:
+            proc.stop()
+        result = proc.wait(self._timeout())
+        with self._lock:
+            self._procs.pop(task_id, None)
+        out = "\n".join(lines) + ("\n[超时，已结束]" if result.timed_out else "")
+        self._set(task_id, accept_code=result.code, accept_output=out[-OUTPUT_TAIL:])
+        return result
 
     # ---------- 审查
     def review_task(self, task_id: str) -> None:
@@ -385,7 +409,7 @@ class Engine:
             changed = gitops.changed_files(self.repo, t.base, t.commit)
             outside = [f for f in changed if t.files and f not in t.files]
             verdict = self.commander.review(t, gitops.diff(self.repo, t.base, t.commit), outside)
-        except (CommanderError, gitops.GitError) as e:
+        except Exception as e:  # 线程顶层：不能停在“审查中”
             t = self._set(task_id, status=DONE,
                           error=f"Claude 审查失败：{e}。请自己看改动后点“我确认合格”或重派")
         else:
@@ -402,23 +426,23 @@ class Engine:
 
     # ---------- 合并
     def merge_task(self, task_id: str) -> None:
-        t = self.store.get_task(task_id)
-        if t.requirement:
-            raise EngineError("需求里的任务要在需求页整体合并")
-        if t.status not in (DONE, PASSED):
-            raise EngineError("只有待审查或合格的任务可以合并")
-        with self._merge_lock:
+        with self._merge_lock:  # 状态检查也在锁里：连点两次合并只合一次
+            t = self.store.get_task(task_id)
+            if t.requirement:
+                raise EngineError("需求里的任务要在需求页整体合并")
+            if t.status not in (DONE, PASSED):
+                raise EngineError("只有待审查或合格的任务可以合并")
             outcome = merger.merge_tasks(self.repo, [t], self.cfg.test_command, self._timeout())
             self._apply_merge([t], outcome)
         extra = {"error": outcome["message"]} if outcome["state"] == "refused" else {}
         self._set(task_id, merge=outcome, **extra)
 
     def merge_requirement(self, req_id: str) -> None:
-        r = self.store.get_requirement(req_id)
-        if r.status != CONFIRM_MERGE:
-            raise EngineError("这个需求还没到合并这一步")
-        tasks = merger.order([t for t in map(self.store.get_task, r.tasks) if t.status == PASSED])
-        with self._merge_lock:
+        with self._merge_lock:  # 状态检查也在锁里：连点两次合并只合一次
+            r = self.store.get_requirement(req_id)
+            if r.status != CONFIRM_MERGE:
+                raise EngineError("这个需求还没到合并这一步")
+            tasks = merger.order([t for t in map(self.store.get_task, r.tasks) if t.status == PASSED])
             outcome = merger.merge_tasks(self.repo, tasks, self.cfg.test_command, self._timeout())
             self._apply_merge(tasks, outcome)
         if outcome["state"] in ("ok", "test_failed"):
@@ -426,8 +450,16 @@ class Engine:
         elif outcome["state"] == "refused":
             self._set_req(req_id, merge=outcome, error=outcome["message"])
         else:
-            self._set_req(req_id, merge=outcome,
-                          error="合并冲突，已恢复原状；冲突的任务可以选“从头重做”在最新代码上重派")
+            self._set_req(req_id, merge=outcome, error=self._merge_stop_message(outcome))
+
+    @staticmethod
+    def _merge_stop_message(outcome: dict) -> str:
+        done = "、".join(outcome["merged"])
+        head = f"{done} 已合并进当前分支；" if done else ""
+        if outcome["state"] == "conflict":
+            return (f"{head}任务 {outcome['conflict_task']} 合并冲突（{'、'.join(outcome['conflicts'])}），"
+                    "这一个已撤回；可以选“从头重做”在最新代码上重派")
+        return f"{head}任务 {outcome['conflict_task']} 没能合并：{outcome['message'][-500:]}"
 
     def _apply_merge(self, tasks: list[Task], outcome: dict) -> None:
         for t in tasks:
@@ -436,8 +468,7 @@ class Engine:
                 if outcome["state"] != "test_failed":
                     self._cleanup(t.id)
             elif t.id == outcome.get("conflict_task"):
-                self._set(t.id, error=f"合并冲突：{'、'.join(outcome['conflicts'])}。"
-                                      "可以选“从头重做”在最新代码上重派")
+                self._set(t.id, error=self._merge_stop_message(outcome))
 
     def _undo(self, merge: dict | None, task_ids: list[str], back_to: str) -> None:
         if not merge or merge.get("state") != "test_failed":
