@@ -1,6 +1,6 @@
 {
   "name": "dispatch",
   "description": "Claude 当指挥，把编码和分析任务派给 Gemini CLI、Copilot CLI，在独立 worktree 里执行，Claude 审查合并",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": { "name": "m1014395102" }
 }
